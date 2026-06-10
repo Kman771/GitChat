@@ -1,0 +1,487 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>GitChat</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      background: #0d0d0d;
+      color: #f0f0f0;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    #app {
+      display: flex;
+      flex: 1;
+      overflow: hidden;
+    }
+
+    /* ── Left panel ─────────────────────────────────── */
+    #left-panel {
+      width: 300px;
+      min-width: 300px;
+      background: #1a1a1a;
+      border-right: 1px solid #333;
+      padding: 24px 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+      overflow-y: auto;
+    }
+
+    #left-panel h1 {
+      font-size: 1.25rem;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      color: #fff;
+    }
+
+    .field-label {
+      font-size: 0.75rem;
+      font-weight: 600;
+      color: #888;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-bottom: 6px;
+    }
+
+    .input-row {
+      display: flex;
+      gap: 8px;
+    }
+
+    #repo-url {
+      flex: 1;
+      padding: 8px 10px;
+      background: #2a2a2a;
+      border: 1px solid #444;
+      border-radius: 6px;
+      font-size: 0.875rem;
+      color: #f0f0f0;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+    #repo-url::placeholder { color: #555; }
+    #repo-url:focus { border-color: #6366f1; }
+
+    #load-btn {
+      padding: 8px 14px;
+      background: #6366f1;
+      color: #fff;
+      border: none;
+      border-radius: 6px;
+      font-size: 0.875rem;
+      font-weight: 600;
+      cursor: pointer;
+      white-space: nowrap;
+      transition: background 0.15s;
+    }
+    #load-btn:hover:not(:disabled) { background: #4f46e5; }
+    #load-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+    #status-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 0.8125rem;
+      color: #888;
+    }
+
+    #status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #444;
+      flex-shrink: 0;
+      transition: background 0.2s;
+    }
+    #status-dot.indexing { background: #f59e0b; }
+    #status-dot.ready    { background: #22c55e; }
+    #status-dot.error    { background: #ef4444; }
+
+    #progress-log {
+      font-size: 0.75rem;
+      color: #666;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      max-height: 220px;
+      overflow-y: auto;
+    }
+    .log-line { line-height: 1.4; color: #aaa; }
+    .log-line.done  { color: #22c55e; font-weight: 500; }
+    .log-line.error { color: #ef4444; }
+
+    /* ── Right panel ────────────────────────────────── */
+    #right-panel {
+      flex: 1;
+      background: #0d0d0d;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    #messages {
+      flex: 1;
+      overflow-y: auto;
+      padding: 24px 28px;
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+    }
+
+    #empty-state {
+      margin: auto;
+      text-align: center;
+      color: #555;
+      font-size: 0.9375rem;
+    }
+    #empty-state p { margin-top: 6px; font-size: 0.8125rem; color: #444; }
+
+    .bubble-wrap {
+      display: flex;
+      flex-direction: column;
+      max-width: 72%;
+    }
+    .bubble-wrap.user      { align-self: flex-end; align-items: flex-end; }
+    .bubble-wrap.assistant { align-self: flex-start; align-items: flex-start; }
+
+    .bubble {
+      padding: 10px 14px;
+      border-radius: 12px;
+      font-size: 0.9rem;
+      line-height: 1.55;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .bubble.user {
+      background: #6366f1;
+      color: #fff;
+      border-bottom-right-radius: 3px;
+    }
+    .bubble.assistant {
+      background: #1e1e1e;
+      color: #e8e8e8;
+      border: 1px solid #333;
+      border-bottom-left-radius: 3px;
+    }
+
+    .context-toggle {
+      margin-top: 6px;
+      font-size: 0.75rem;
+    }
+    .context-toggle summary {
+      cursor: pointer;
+      color: #666;
+      user-select: none;
+    }
+    .context-toggle summary:hover { color: #aaa; }
+    .context-toggle pre {
+      margin-top: 8px;
+      padding: 10px 12px;
+      background: #1a1a1a;
+      border: 1px solid #333;
+      border-radius: 6px;
+      font-size: 0.7rem;
+      line-height: 1.5;
+      overflow-x: auto;
+      white-space: pre;
+      color: #aaa;
+      max-height: 320px;
+      overflow-y: auto;
+    }
+
+    /* ── Chat footer ────────────────────────────────── */
+    #chat-footer {
+      border-top: 1px solid #222;
+      padding: 12px 16px;
+      display: flex;
+      gap: 10px;
+      align-items: flex-end;
+      background: #0d0d0d;
+    }
+
+    #chat-input {
+      flex: 1;
+      padding: 10px 12px;
+      background: #1a1a1a;
+      border: 1px solid #333;
+      border-radius: 8px;
+      font-size: 0.9rem;
+      font-family: inherit;
+      color: #f0f0f0;
+      resize: none;
+      outline: none;
+      line-height: 1.5;
+      max-height: 160px;
+      overflow-y: auto;
+      transition: border-color 0.15s;
+    }
+    #chat-input::placeholder { color: #555; }
+    #chat-input:focus { border-color: #6366f1; }
+    #chat-input:disabled { opacity: 0.4; }
+
+    #send-btn {
+      padding: 10px 18px;
+      background: #6366f1;
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      font-size: 0.875rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.15s;
+      white-space: nowrap;
+    }
+    #send-btn:hover:not(:disabled) { background: #4f46e5; }
+    #send-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+    .spinner {
+      display: inline-block;
+      width: 14px;
+      height: 14px;
+      border: 2px solid #333;
+      border-top-color: #6366f1;
+      border-radius: 50%;
+      animation: spin 0.6s linear infinite;
+      vertical-align: middle;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+<div id="app">
+
+  <!-- ── Left panel ── -->
+  <div id="left-panel">
+    <h1>GitChat</h1>
+
+    <div>
+      <div class="field-label">GitHub Repository URL</div>
+      <div class="input-row">
+        <input id="repo-url" type="text" placeholder="https://github.com/owner/repo" />
+        <button id="load-btn" onclick="loadRepo()">Load</button>
+      </div>
+    </div>
+
+    <div id="status-row">
+      <div id="status-dot"></div>
+      <span id="status-text">No repository loaded</span>
+    </div>
+
+    <div id="progress-log"></div>
+  </div>
+
+  <!-- ── Right panel ── -->
+  <div id="right-panel">
+    <div id="messages">
+      <div id="empty-state">
+        <strong>No repository loaded</strong>
+        <p>Paste a GitHub URL on the left and click Load.</p>
+      </div>
+    </div>
+
+    <div id="chat-footer">
+      <textarea
+        id="chat-input"
+        rows="1"
+        placeholder="Ask a question about the repository… (Enter to send, Shift+Enter for newline)"
+        disabled
+        oninput="autoResize(this)"
+      ></textarea>
+      <button id="send-btn" onclick="sendMessage()" disabled>Send</button>
+    </div>
+  </div>
+
+</div>
+
+<script>
+  // ── Helpers ──────────────────────────────────────────────────────────────
+
+  function setStatus(state, text) {
+    const dot = document.getElementById('status-dot');
+    dot.className = state; // '', 'indexing', 'ready', 'error'
+    document.getElementById('status-text').textContent = text;
+  }
+
+  function addLog(text, cls = '') {
+    const log = document.getElementById('progress-log');
+    const line = document.createElement('div');
+    line.className = 'log-line' + (cls ? ' ' + cls : '');
+    line.textContent = text;
+    log.appendChild(line);
+    log.scrollTop = log.scrollHeight;
+  }
+
+  function autoResize(el) {
+    el.style.height = 'auto';
+    el.style.height = Math.min(el.scrollHeight, 160) + 'px';
+  }
+
+  function scrollMessages() {
+    const m = document.getElementById('messages');
+    m.scrollTop = m.scrollHeight;
+  }
+
+  function setChatEnabled(enabled) {
+    document.getElementById('chat-input').disabled = !enabled;
+    document.getElementById('send-btn').disabled = !enabled;
+  }
+
+  // ── Load repo ────────────────────────────────────────────────────────────
+
+  async function loadRepo() {
+    const url = document.getElementById('repo-url').value.trim();
+    if (!url) return;
+
+    // Reset UI
+    document.getElementById('load-btn').disabled = true;
+    document.getElementById('progress-log').innerHTML = '';
+    setChatEnabled(false);
+    setStatus('indexing', 'Indexing…');
+    clearChat();
+
+    try {
+      const resp = await fetch('/api/index', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ repo_url: url }),
+      });
+
+      const reader = resp.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+
+        // Parse SSE lines
+        const lines = buffer.split('\n');
+        buffer = lines.pop(); // keep incomplete last line
+
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue;
+          const evt = JSON.parse(line.slice(6));
+          const { status, message } = evt;
+
+          if (status === 'done') {
+            addLog('✓ ' + message, 'done');
+            setStatus('ready', message);
+            setChatEnabled(true);
+            document.getElementById('empty-state')?.remove();
+          } else if (status === 'error') {
+            addLog('✗ ' + message, 'error');
+            setStatus('error', 'Error — see log');
+          } else {
+            addLog(message);
+          }
+        }
+      }
+    } catch (err) {
+      addLog('Network error: ' + err.message, 'error');
+      setStatus('error', 'Failed');
+    } finally {
+      document.getElementById('load-btn').disabled = false;
+    }
+  }
+
+  // ── Chat ─────────────────────────────────────────────────────────────────
+
+  function clearChat() {
+    const m = document.getElementById('messages');
+    m.innerHTML = '';
+  }
+
+  function appendBubble(role, text, contextText = '', chunksUsed = 0) {
+    const empty = document.getElementById('empty-state');
+    if (empty) empty.remove();
+
+    const wrap = document.createElement('div');
+    wrap.className = 'bubble-wrap ' + role;
+
+    const bubble = document.createElement('div');
+    bubble.className = 'bubble ' + role;
+    bubble.textContent = text;
+    wrap.appendChild(bubble);
+
+    if (role === 'assistant' && contextText) {
+      const details = document.createElement('details');
+      details.className = 'context-toggle';
+      const summary = document.createElement('summary');
+      summary.textContent = `Show context (${chunksUsed} chunk${chunksUsed !== 1 ? 's' : ''} retrieved)`;
+      const pre = document.createElement('pre');
+      pre.textContent = contextText;
+      details.appendChild(summary);
+      details.appendChild(pre);
+      wrap.appendChild(details);
+    }
+
+    document.getElementById('messages').appendChild(wrap);
+    scrollMessages();
+    return wrap;
+  }
+
+  async function sendMessage() {
+    const input = document.getElementById('chat-input');
+    const message = input.value.trim();
+    if (!message) return;
+
+    input.value = '';
+    input.style.height = 'auto';
+    setChatEnabled(false);
+
+    appendBubble('user', message);
+
+    // Placeholder "thinking" bubble
+    const thinkingWrap = appendBubble('assistant', '…');
+    const thinkingBubble = thinkingWrap.querySelector('.bubble');
+    thinkingBubble.innerHTML = '<span class="spinner"></span>';
+
+    try {
+      const resp = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message }),
+      });
+      const data = await resp.json();
+
+      thinkingWrap.remove();
+
+      if (data.error) {
+        appendBubble('assistant', 'Error: ' + data.error);
+      } else {
+        appendBubble('assistant', data.reply, data.context, data.chunks_used);
+      }
+    } catch (err) {
+      thinkingWrap.remove();
+      appendBubble('assistant', 'Network error: ' + err.message);
+    } finally {
+      setChatEnabled(true);
+      input.focus();
+    }
+  }
+
+  // Enter to send, Shift+Enter for newline
+  document.getElementById('chat-input').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      if (!document.getElementById('send-btn').disabled) sendMessage();
+    }
+  });
+
+  // Load repo on Enter in the URL field
+  document.getElementById('repo-url').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') loadRepo();
+  });
+</script>
+</body>
+</html>
