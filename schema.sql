@@ -7,7 +7,7 @@ CREATE TABLE IF NOT EXISTS chunks (
     id           SERIAL PRIMARY KEY,
     repo_name    TEXT        NOT NULL,
     file_path    TEXT        NOT NULL,
-    chunk_type   TEXT        NOT NULL  (chunk_type IN ('code', 'docs', 'git_log')),
+    chunk_type   TEXT        NOT NULL  CHECK (chunk_type IN ('code', 'docs', 'git_log')),
     content      TEXT        NOT NULL,
     metadata     JSONB,
     embedding    vector(768),

@@ -1,18 +1,16 @@
 """query.py — multi-turn RAG chatbot with prompt caching on retrieved chunks."""
 
-import os
 import sys
 
 import anthropic
 import psycopg2
-from dotenv import load_dotenv
 from pgvector.psycopg2 import register_vector
 
 from retrieval import retrieve
+from config import DATABASE_URL, ANTHROPIC_API_KEY
 
 SYSTEM_PROMPT = "you are a senior engineer who can answer questions about any codebase to an intern"
 MODEL = "claude-sonnet-4-6"
-DEFAULT_DB_URL = "postgresql://kaashishvenkat@localhost:5432/repo_rag"
 
 
 def _format_chunks(chunks: list[dict]) -> str:
@@ -60,7 +58,7 @@ class ChatSession:
 
         response = self.client.messages.create(
             model=MODEL,
-            max_tokens=16_000,
+            max_tokens=8000,
             system=[
                 {
                     "type": "text",
@@ -89,17 +87,14 @@ class ChatSession:
 
 
 def main(repo_name: str | None = None) -> None:
-    load_dotenv()
-    api_key = os.getenv("ANTHROPIC_API_KEY")
-    if not api_key:
+    if not ANTHROPIC_API_KEY:
         print("Error: ANTHROPIC_API_KEY not set in .env", file=sys.stderr)
         sys.exit(1)
 
-    db_url = os.getenv("DATABASE_URL", DEFAULT_DB_URL)
-    conn = psycopg2.connect(db_url)
+    conn = psycopg2.connect(DATABASE_URL)
     register_vector(conn)
 
-    client = anthropic.Anthropic(api_key=api_key)
+    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
     session = ChatSession(client, conn, repo_name=repo_name)
 
     scope = f" (repo: {repo_name})" if repo_name else " (all repos)"

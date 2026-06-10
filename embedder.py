@@ -8,16 +8,13 @@ import urllib.request
 
 import numpy as np
 import psycopg2
-from dotenv import load_dotenv
 from pgvector.psycopg2 import register_vector
 
 from chunker import chunk_repo
+from config import DATABASE_URL, OLLAMA_URL
 
-OLLAMA_URL = "http://localhost:11434/api/embed"
 OLLAMA_MODEL = "nomic-embed-text"
 BATCH_SIZE = 64
-
-DEFAULT_DB_URL = "postgresql://kaashishvenkat@localhost:5432/repo_rag"
 
 
 def get_embeddings(texts: list[str], batch_size: int = BATCH_SIZE) -> list[list[float]]:
@@ -95,8 +92,7 @@ def embed_and_store(chunks: dict[str, list[dict]], conn) -> tuple[int, int]:
 
 
 def main(repo_url: str) -> None:
-    load_dotenv()
-    db_url = os.getenv("DATABASE_URL", DEFAULT_DB_URL)
+    db_url = DATABASE_URL
 
     print(f"Chunking {repo_url} ...")
     chunks = chunk_repo(repo_url)

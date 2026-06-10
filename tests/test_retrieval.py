@@ -15,7 +15,7 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import pytest
 
-from retrieval import embed_query, retrieve, SIMILARITY_THRESHOLD
+from retrieval import embed_query, retrieve
 from embedder import OLLAMA_URL
 
 
@@ -112,16 +112,6 @@ def test_retrieve_respects_top_k(mock_embed):
 
 
 @patch("retrieval.embed_query", return_value=FAKE_VEC)
-def test_retrieve_threshold_in_sql_params(mock_embed):
-    conn, cursor = _make_mock_conn([])
-    retrieve("q", conn, threshold=0.99)
-    call_args = cursor.execute.call_args
-    params = call_args[0][1]
-    scalar_params = [p for p in params if not isinstance(p, np.ndarray)]
-    assert 0.99 in scalar_params, f"threshold=0.99 should appear in SQL params, got: {scalar_params}"
-
-
-@patch("retrieval.embed_query", return_value=FAKE_VEC)
 def test_retrieve_with_repo_name_includes_filter_param(mock_embed):
     conn, cursor = _make_mock_conn([])
     retrieve("routing", conn, repo_name="bottle")
@@ -161,8 +151,8 @@ def test_retrieve_tinyrenderer_rendering_query(db_conn):
         pytest.skip("tinyrenderer not indexed in DB — run embedder.py first")
     # tinyrenderer has only ~10 chunks (mostly C++ headers + README); use a lower
     # threshold so the test validates retrieval works, not the similarity cutoff tuning.
-    results = retrieve("how is a triangle drawn on screen", db_conn, repo_name="tinyrenderer", threshold=0.5)
-    assert len(results) >= 1, "Expected at least one chunk from tinyrenderer (threshold=0.5)"
+    results = retrieve("how is a triangle drawn on screen", db_conn, repo_name="tinyrenderer")
+    assert len(results) >= 1, "Expected at least one chunk from tinyrenderer"
 
 
 @pytestmark_integration
@@ -170,16 +160,16 @@ def test_retrieve_minds_platform_api_query(db_conn):
     if not _repo_indexed(db_conn, "minds-platform"):
         pytest.skip("minds-platform not indexed in DB — run embedder.py first")
     # minds-platform has only ~39 chunks; lower threshold for same reason as tinyrenderer.
-    results = retrieve("how are API calls made", db_conn, repo_name="minds-platform", threshold=0.5)
-    assert len(results) >= 1, "Expected at least one chunk from minds-platform (threshold=0.5)"
+    results = retrieve("how are API calls made", db_conn, repo_name="minds-platform")
+    assert len(results) >= 1, "Expected at least one chunk from minds-platform"
 
 
 @pytestmark_integration
 def test_retrieve_similarity_scores_in_valid_range(db_conn):
-    results = retrieve("function definition", db_conn, threshold=SIMILARITY_THRESHOLD)
+    results = retrieve("function definition", db_conn)
     for r in results:
-        assert SIMILARITY_THRESHOLD <= r["similarity"] <= 1.0, (
-            f"Similarity {r['similarity']:.4f} is outside valid range"
+        assert r["similarity"] <= 1.0, (
+            f"Similarity {r['similarity']:.4f} exceeds 1.0"
         )
 
 

@@ -1,8 +1,7 @@
-# Environment variables
+# Environment variables — .env.example IS committed (it's a safe template)
 .env
 .env.local
 .env.*.local
-.env.example
 
 # Personal Claude instructions (not shared)
 CLAUDE.local.md

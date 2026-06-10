@@ -1,20 +1,16 @@
 """retrieval.py — embed a query and retrieve the most similar chunks from PostgreSQL."""
 
-import json
 import os
 import sys
 
 import numpy as np
 import psycopg2
-from dotenv import load_dotenv
 from pgvector.psycopg2 import register_vector
 
 from embedder import get_embeddings
+from config import DATABASE_URL
 
-SIMILARITY_THRESHOLD = 0.7  # PLACEHOLDER — tune after testing against real queries
 TOP_K = 10
-
-DEFAULT_DB_URL = "postgresql://kaashishvenkat@localhost:5432/repo_rag"
 
 
 def embed_query(query: str) -> list[float]:
@@ -27,20 +23,14 @@ def retrieve(
     conn,
     repo_name: str | None = None,
     top_k: int = TOP_K,
-    threshold: float = SIMILARITY_THRESHOLD,
 ) -> list[dict]:
-    """Find chunks whose cosine similarity to *query* is >= *threshold*.
-
-    cosine similarity  = 1 − cosine distance
-    pgvector operator  <=>  returns cosine distance, so:
-        similarity = 1 − (embedding <=> query_vector)
+    """Return the top *top_k* chunks most similar to *query*, ordered by cosine similarity.
 
     Args:
         query:     Natural-language question or code snippet.
         conn:      Open psycopg2 connection with pgvector registered.
         repo_name: If given, restrict search to this repo only.
-        top_k:     Hard cap on results even when many chunks beat the threshold.
-        threshold: Minimum cosine similarity to include a chunk (0–1 scale).
+        top_k:     Number of chunks to return (default 10).
 
     Returns:
         List of dicts ordered by similarity descending, each containing:
@@ -48,31 +38,25 @@ def retrieve(
     """
     query_vec = np.array(embed_query(query), dtype=np.float32)
 
-    # Build the query dynamically so the optional repo_name filter is clean.
-    # Inner query computes similarity once; outer query filters and sorts.
     if repo_name:
-        inner_sql = """
+        sql = """
             SELECT id, repo_name, file_path, chunk_type, content, metadata,
                    1 - (embedding <=> %s::vector) AS similarity
             FROM chunks
             WHERE repo_name = %s
+            ORDER BY similarity DESC
+            LIMIT %s
         """
-        inner_params = (query_vec, repo_name)
+        params = (query_vec, repo_name, top_k)
     else:
-        inner_sql = """
+        sql = """
             SELECT id, repo_name, file_path, chunk_type, content, metadata,
                    1 - (embedding <=> %s::vector) AS similarity
             FROM chunks
+            ORDER BY similarity DESC
+            LIMIT %s
         """
-        inner_params = (query_vec,)
-
-    sql = f"""
-        SELECT * FROM ({inner_sql}) sub
-        WHERE similarity >= %s
-        ORDER BY similarity DESC
-        LIMIT %s
-    """
-    params = (*inner_params, threshold, top_k)
+        params = (query_vec, top_k)
 
     cur = conn.cursor()
     cur.execute(sql, params)
@@ -84,8 +68,7 @@ def retrieve(
 
 
 def main(query: str, repo_name: str | None = None) -> None:
-    load_dotenv()
-    db_url = os.getenv("DATABASE_URL", DEFAULT_DB_URL)
+    db_url = DATABASE_URL
 
     conn = psycopg2.connect(db_url)
     register_vector(conn)
@@ -93,13 +76,13 @@ def main(query: str, repo_name: str | None = None) -> None:
     print(f"\nQuery : {query!r}")
     if repo_name:
         print(f"Repo  : {repo_name}")
-    print(f"Threshold : {SIMILARITY_THRESHOLD}  |  top_k : {TOP_K}\n")
+    print(f"top_k : {TOP_K}\n")
 
     results = retrieve(query, conn, repo_name=repo_name)
     conn.close()
 
     if not results:
-        print("No chunks found above the similarity threshold.")
+        print("No chunks found.")
         return
 
     print(f"Found {len(results)} chunk(s):\n")

@@ -1,12 +1,10 @@
 """app.py — Flask web frontend for GitChat RAG system."""
 
 import json
-import os
 import sys
 
 import anthropic
 import psycopg2
-from dotenv import load_dotenv
 from flask import Flask, Response, jsonify, render_template, request, stream_with_context
 from pgvector.psycopg2 import register_vector
 
@@ -14,12 +12,9 @@ from chunker import chunk_repo
 from embedder import embed_and_store
 from query import ChatSession, _format_chunks
 from retrieval import retrieve
-
-load_dotenv()
+from config import DATABASE_URL, ANTHROPIC_API_KEY
 
 app = Flask(__name__)
-
-DEFAULT_DB_URL = "postgresql://kaashishvenkat@localhost:5432/repo_rag"
 
 # Module-level state — single-user dev tool, no concurrency needed.
 _state: dict = {
@@ -31,8 +26,7 @@ _state: dict = {
 
 
 def _get_conn():
-    db_url = os.getenv("DATABASE_URL", DEFAULT_DB_URL)
-    conn = psycopg2.connect(db_url)
+    conn = psycopg2.connect(DATABASE_URL)
     register_vector(conn)
     return conn
 
@@ -74,8 +68,7 @@ def index_repo():
             embed_and_store(chunks, conn)
 
             repo_name = repo_url.rstrip("/").split("/")[-1].removesuffix(".git")
-            api_key = os.getenv("ANTHROPIC_API_KEY")
-            client = anthropic.Anthropic(api_key=api_key)
+            client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
             _state["conn"] = conn
             _state["client"] = client
@@ -116,6 +109,6 @@ def chat():
 
 
 if __name__ == "__main__":
-    if not os.getenv("ANTHROPIC_API_KEY"):
+    if not ANTHROPIC_API_KEY:
         print("Warning: ANTHROPIC_API_KEY not set in .env", file=sys.stderr)
     app.run(debug=False, port=8080, threaded=False)

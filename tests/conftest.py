@@ -1,24 +1,25 @@
 """conftest.py — shared fixtures for all test modules."""
 
+import sys
 import os
+sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+
 import pytest
 import psycopg2
 from pgvector.psycopg2 import register_vector
+from config import DATABASE_URL
 
 REPO_URLS = [
-    "https://github.com/bottlepy/bottle",       # pure Python + markdown
-    "https://github.com/ssloy/tinyrenderer",    # C++ — tests generic regex chunker
-    "https://github.com/mindsdb/minds-platform", # mixed Python at scale
+    "https://github.com/bottlepy/bottle",
+    "https://github.com/ssloy/tinyrenderer",
+    "https://github.com/mindsdb/minds-platform",
 ]
-
-DEFAULT_DB_URL = "postgresql://kaashishvenkat@localhost:5432/repo_rag"
 
 
 @pytest.fixture(scope="function")
 def db_conn():
     """Open a psycopg2 connection with pgvector registered. Caller is responsible for commit/rollback."""
-    db_url = os.getenv("DATABASE_URL", DEFAULT_DB_URL)
-    conn = psycopg2.connect(db_url)
+    conn = psycopg2.connect(DATABASE_URL)
     register_vector(conn)
     yield conn
     conn.close()
