@@ -35,6 +35,8 @@ def get_embeddings(texts: list[str], batch_size: int = BATCH_SIZE) -> list[list[
         try:
             with urllib.request.urlopen(req, timeout=120) as resp:
                 data = json.loads(resp.read())
+        except urllib.error.HTTPError as e:
+            raise RuntimeError(f"Ollama rejected the request (HTTP {e.code}): {e.read().decode()}") from e
         except urllib.error.URLError as e:
             raise RuntimeError(
                 f"Cannot reach Ollama at {OLLAMA_URL}. "

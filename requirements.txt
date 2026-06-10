@@ -4,3 +4,5 @@ anthropic
 python-dotenv
 gitpython
 tiktoken
+pytest
+numpy
