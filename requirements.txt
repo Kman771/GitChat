@@ -1,0 +1,6 @@
+psycopg2-binary
+pgvector
+anthropic
+python-dotenv
+gitpython
+tiktoken
