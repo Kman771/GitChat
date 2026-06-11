@@ -48,47 +48,49 @@ def get_embeddings(texts: list[str], batch_size: int = BATCH_SIZE) -> list[list[
     return all_embeddings
 
 
-def embed_and_store(chunks: dict[str, list[dict]], conn) -> tuple[int, int]:
+def embed_and_store(chunks: list[dict], conn) -> tuple[int, int]:
     """Embed all chunks and bulk-insert them into the chunks table.
 
+    Accepts a flat list of chunk dicts (each with chunk_type, chunk_name, content, etc.).
     Returns (code_rows_inserted, docs_rows_inserted).
     """
+    if not chunks:
+        return 0, 0
+
     cur = conn.cursor()
     counts = {"code": 0, "docs": 0}
 
-    for chunk_type in ("code", "docs"):
-        chunk_list = chunks.get(chunk_type, [])
-        if not chunk_list:
-            continue
+    # Embed all chunks in one batch for efficiency
+    print(f"  Embedding {len(chunks)} chunks...", flush=True)
+    texts = [c["content"] for c in chunks]
+    embeddings = get_embeddings(texts)
 
-        print(f"  Embedding {len(chunk_list)} {chunk_type} chunks...", flush=True)
-        texts = [c["content"] for c in chunk_list]
-        embeddings = get_embeddings(texts)
-
-        rows = [
-            (
-                c["repo_name"],
-                c["file_path"],
-                chunk_type,
-                c["content"],
-                json.dumps({"name": c["name"]}),
-                np.array(emb, dtype=np.float32),
-            )
-            for c, emb in zip(chunk_list, embeddings)
-        ]
-
-        cur.executemany(
-            """
-            INSERT INTO chunks (repo_name, file_path, chunk_type, content, metadata, embedding)
-            VALUES (%s, %s, %s, %s, %s, %s)
-            """,
-            rows,
+    rows = [
+        (
+            c["repo_name"],
+            c["file_path"],
+            c["chunk_type"],
+            c["content"],
+            json.dumps({"name": c["chunk_name"]}),
+            np.array(emb, dtype=np.float32),
         )
-        counts[chunk_type] = len(rows)
+        for c, emb in zip(chunks, embeddings)
+    ]
+
+    cur.executemany(
+        """
+        INSERT INTO chunks (repo_name, file_path, chunk_type, content, metadata, embedding)
+        VALUES (%s, %s, %s, %s, %s, %s)
+        """,
+        rows,
+    )
+
+    for c in chunks:
+        counts[c["chunk_type"]] = counts.get(c["chunk_type"], 0) + 1
 
     conn.commit()
     cur.close()
-    return counts["code"], counts["docs"]
+    return counts.get("code", 0), counts.get("docs", 0)
 
 
 def main(repo_url: str) -> None:
@@ -96,7 +98,9 @@ def main(repo_url: str) -> None:
 
     print(f"Chunking {repo_url} ...")
     chunks = chunk_repo(repo_url)
-    print(f"  {len(chunks['code'])} code chunks, {len(chunks['docs'])} docs chunks")
+    code_chunks = sum(1 for c in chunks if c["chunk_type"] == "code")
+    docs_chunks = sum(1 for c in chunks if c["chunk_type"] == "docs")
+    print(f"  {code_chunks} code chunks, {docs_chunks} docs chunks")
 
     print(f"Connecting to database ...")
     conn = psycopg2.connect(db_url)

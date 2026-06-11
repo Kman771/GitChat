@@ -1,4 +1,6 @@
 flask
+tree-sitter==0.21.3
+tree-sitter-languages
 psycopg2-binary
 pgvector
 anthropic

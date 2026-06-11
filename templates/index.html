@@ -4,6 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>GitChat</title>
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -158,13 +159,13 @@
       border-radius: 12px;
       font-size: 0.9rem;
       line-height: 1.55;
-      white-space: pre-wrap;
       word-break: break-word;
     }
     .bubble.user {
       background: #6366f1;
       color: #fff;
       border-bottom-right-radius: 3px;
+      white-space: pre-wrap;
     }
     .bubble.assistant {
       background: #1e1e1e;
@@ -172,6 +173,16 @@
       border: 1px solid #333;
       border-bottom-left-radius: 3px;
     }
+    .bubble.assistant p { margin: 0 0 8px; }
+    .bubble.assistant p:last-child { margin-bottom: 0; }
+    .bubble.assistant code { background: #2a2a2a; padding: 1px 5px; border-radius: 3px; font-family: monospace; font-size: 0.82em; color: #e8e8e8; }
+    .bubble.assistant pre { background: #141414; border: 1px solid #333; border-radius: 6px; padding: 10px 12px; overflow-x: auto; margin: 8px 0; }
+    .bubble.assistant pre code { background: none; padding: 0; font-size: 0.85em; }
+    .bubble.assistant ul, .bubble.assistant ol { padding-left: 20px; margin: 4px 0 8px; }
+    .bubble.assistant li { margin: 3px 0; }
+    .bubble.assistant hr { border: none; border-top: 1px solid #333; margin: 10px 0; }
+    .bubble.assistant strong { color: #fff; }
+    .bubble.assistant h1, .bubble.assistant h2, .bubble.assistant h3 { color: #fff; margin: 10px 0 6px; font-size: 1em; }
 
     .context-toggle {
       margin-top: 6px;
@@ -410,7 +421,11 @@
 
     const bubble = document.createElement('div');
     bubble.className = 'bubble ' + role;
-    bubble.textContent = text;
+    if (role === 'assistant') {
+      bubble.innerHTML = marked.parse(text);
+    } else {
+      bubble.textContent = text;
+    }
     wrap.appendChild(bubble);
 
     if (role === 'assistant' && contextText) {

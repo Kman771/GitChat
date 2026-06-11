@@ -8,7 +8,7 @@ import psycopg2
 from flask import Flask, Response, jsonify, render_template, request, stream_with_context
 from pgvector.psycopg2 import register_vector
 
-from chunker import chunk_repo
+from chunker import chunk_repo, normalize_github_url
 from embedder import embed_and_store
 from query import ChatSession, _format_chunks
 from retrieval import retrieve
@@ -43,7 +43,7 @@ def index():
 @app.route("/api/index", methods=["POST"])
 def index_repo():
     data = request.get_json()
-    repo_url = (data or {}).get("repo_url", "").strip()
+    repo_url = normalize_github_url((data or {}).get("repo_url", "").strip())
     if not repo_url:
         return jsonify({"error": "No repo URL provided"}), 400
 
@@ -59,8 +59,8 @@ def index_repo():
 
             yield _sse("cloning", f"Cloning {repo_url} (shallow clone)...")
             chunks = chunk_repo(repo_url)
-            code_n = len(chunks["code"])
-            docs_n = len(chunks["docs"])
+            code_n = sum(1 for c in chunks if c["chunk_type"] == "code")
+            docs_n = sum(1 for c in chunks if c["chunk_type"] == "docs")
             total = code_n + docs_n
             yield _sse("chunking", f"Chunked: {code_n} code + {docs_n} docs = {total} chunks total")
 

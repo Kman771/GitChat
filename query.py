@@ -9,11 +9,22 @@ from pgvector.psycopg2 import register_vector
 from retrieval import retrieve
 from config import DATABASE_URL, ANTHROPIC_API_KEY
 
-SYSTEM_PROMPT = "you are a senior engineer who can answer questions about any codebase to an intern"
+SYSTEM_PROMPT = (
+    "You are a senior engineer helping an intern understand a specific codebase. "
+    "Rules:\n"
+    "1. Only answer questions about the codebase. For anything else, respond exactly: "
+    "\"I can only answer questions about this codebase.\"\n"
+    "2. Match response length to question complexity — simple questions get 1-3 sentences, "
+    "complex questions get a thorough answer.\n"
+    "3. Always reference the relevant code from the provided source chunks.\n"
+    "4. Use markdown: backticks for identifiers, fenced blocks for code snippets, "
+    "bullets for lists."
+)
 MODEL = "claude-sonnet-4-6"
 
 
 def _format_chunks(chunks: list[dict]) -> str:
+    """Format chunks as plain text for the UI 'Show context' panel."""
     if not chunks:
         return ""
     lines = ["Relevant source sections (retrieved by semantic similarity):"]
@@ -27,6 +38,50 @@ def _format_chunks(chunks: list[dict]) -> str:
     return "\n".join(lines)
 
 
+def _chunks_to_documents(chunks: list[dict]) -> list[dict]:
+    """Convert retrieved chunks to document content blocks with citations enabled."""
+    docs = []
+    for c in chunks:
+        name = c["metadata"].get("name", "") if isinstance(c["metadata"], dict) else ""
+        title = f"{c['repo_name']}/{c['file_path']}"
+        if name:
+            title += f" · {name}"
+        docs.append({
+            "type": "document",
+            "source": {"type": "text", "media_type": "text/plain", "data": c["content"]},
+            "title": title,
+            "citations": {"enabled": True},
+        })
+    if docs:
+        docs[-1]["cache_control"] = {"type": "ephemeral"}
+    return docs
+
+
+def _parse_cited_response(response) -> str:
+    """Reconstruct reply text from content blocks, appending a Sources section."""
+    parts = []
+    refs: list[tuple[str, str]] = []  # (document_title, cited_text) in first-seen order
+
+    for block in response.content:
+        if block.type != "text":
+            continue
+        citations = getattr(block, "citations", None) or []
+        parts.append(block.text)
+        for cit in citations:
+            key = (cit.document_title, cit.cited_text)
+            if key not in refs:
+                refs.append(key)
+            parts.append(f"[{refs.index(key) + 1}]")
+
+    reply = "".join(parts)
+    if refs:
+        reply += "\n\n---\n**Sources**\n"
+        for i, (title, cited) in enumerate(refs, 1):
+            snippet = cited[:100] + ("…" if len(cited) > 100 else "")
+            reply += f'[{i}] `{title}` — *"{snippet}"*\n'
+    return reply
+
+
 class ChatSession:
     """Multi-turn RAG conversation with Claude, with prompt caching on retrieved chunks."""
 
@@ -38,18 +93,12 @@ class ChatSession:
 
     def send(self, user_query: str) -> str:
         chunks = retrieve(user_query, self.conn, repo_name=self.repo_name)
-        context_text = _format_chunks(chunks)
 
-        # The context block carries cache_control so retrieved chunk tokens are
-        # cached server-side and not re-billed on subsequent conversation turns.
-        if context_text:
-            user_content: str | list = [
-                {
-                    "type": "text",
-                    "text": context_text,
-                    "cache_control": {"type": "ephemeral"},
-                },
-                {"type": "text", "text": user_query},
+        if chunks:
+            # Pass chunks as document blocks so Claude can cite specific passages.
+            # cache_control is applied to the last document, caching the full set.
+            user_content: str | list = _chunks_to_documents(chunks) + [
+                {"type": "text", "text": user_query}
             ]
         else:
             user_content = user_query
@@ -69,9 +118,7 @@ class ChatSession:
             messages=self.messages,
         )
 
-        reply = next(
-            (block.text for block in response.content if block.type == "text"), ""
-        )
+        reply = _parse_cited_response(response)
         self.messages.append({"role": "assistant", "content": reply})
 
         u = response.usage
