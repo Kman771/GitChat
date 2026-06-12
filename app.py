@@ -2,6 +2,7 @@
 
 import json
 import sys
+import urllib.request
 
 import anthropic
 import psycopg2
@@ -20,8 +21,24 @@ _state: dict = {
     "conn": None,
     "session": None,
     "repo_name": None,
+    "repo_url": None,
+    "default_branch": "main",
     "client": None,
 }
+
+
+def _get_default_branch(repo_url: str) -> str:
+    """Ask the GitHub API for the repo's default branch. Falls back to 'main'."""
+    try:
+        parts = repo_url.rstrip("/").split("/")
+        owner, repo = parts[-2], parts[-1].removesuffix(".git")
+        api_url = f"https://api.github.com/repos/{owner}/{repo}"
+        req = urllib.request.Request(api_url, headers={"User-Agent": "GitChat"})
+        with urllib.request.urlopen(req, timeout=5) as r:
+            data = json.loads(r.read())
+        return data.get("default_branch", "main")
+    except Exception:
+        return "main"
 
 
 def _get_conn():
@@ -67,12 +84,15 @@ def index_repo():
             embed_and_store(chunks, conn)
 
             repo_name = repo_url.rstrip("/").split("/")[-1].removesuffix(".git")
+            default_branch = _get_default_branch(repo_url)
             client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
             _state["conn"] = conn
             _state["client"] = client
             _state["repo_name"] = repo_name
-            _state["session"] = ChatSession(client, conn, repo_name=repo_name)
+            _state["repo_url"] = repo_url
+            _state["default_branch"] = default_branch
+            _state["session"] = ChatSession(client, conn, repo_name=repo_name, repo_url=repo_url, default_branch=default_branch)
 
             yield _sse("done", f"Ready! {total} chunks indexed for '{repo_name}'.")
 
@@ -95,7 +115,7 @@ def chat():
     reply = _state["session"].send(message)
 
     chunks = _state["session"].last_chunks
-    context_text = _format_chunks(chunks)
+    context_text = _format_chunks(chunks, repo_url=_state.get("repo_url"), default_branch=_state.get("default_branch", "main"))
 
     return jsonify({
         "reply": reply,

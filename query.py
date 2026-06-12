@@ -22,7 +22,11 @@ SYSTEM_PROMPT = (
     "complex questions get a thorough answer.\n"
     "4. Always reference the relevant code from the retrieved chunks.\n"
     "5. Use markdown: backticks for identifiers, fenced blocks for code snippets, "
-    "bullets for lists."
+    "bullets for lists.\n"
+    "6. Cite sources inline: each time you mention a function, class, or file from a retrieved "
+    "chunk, link it using the GitHub URL provided in the 'Source:' line of that chunk. "
+    "Format: [function_name](url) or [ClassName in file.py](url). Place the link immediately "
+    "after the reference — do not add a separate Sources or References section at the end."
 )
 MODEL = "claude-haiku-4-5-20251001"
 MAX_TOOL_ROUNDS = 3
@@ -84,8 +88,8 @@ def _build_repo_map(conn, repo_name: str | None) -> str:
     return "\n".join(lines)
 
 
-def _format_chunks(chunks: list[dict]) -> str:
-    """Format chunks as plain text for the UI 'Show context' panel."""
+def _format_chunks(chunks: list[dict], repo_url: str | None = None, default_branch: str = "main") -> str:
+    """Format chunks for tool results (with GitHub URLs) or the UI context panel."""
     if not chunks:
         return ""
     lines = ["Relevant source sections (retrieved by semantic similarity):"]
@@ -95,6 +99,9 @@ def _format_chunks(chunks: list[dict]) -> str:
         if name:
             header += f" · {name}"
         header += f" (similarity {c['similarity']:.3f})"
+        if repo_url:
+            gh_url = f"{repo_url.rstrip('/')}/blob/{default_branch}/{c['file_path']}"
+            header += f"\nSource: {gh_url}"
         lines.append(f"{header}\n```\n{c['content']}\n```")
     return "\n".join(lines)
 
@@ -107,10 +114,12 @@ def _parse_response(response) -> str:
 class ChatSession:
     """Multi-turn RAG conversation with Claude, with prompt caching on retrieved chunks."""
 
-    def __init__(self, client: anthropic.Anthropic, conn, repo_name: str | None = None) -> None:
+    def __init__(self, client: anthropic.Anthropic, conn, repo_name: str | None = None, repo_url: str | None = None, default_branch: str = "main") -> None:
         self.client = client
         self.conn = conn
         self.repo_name = repo_name
+        self.repo_url = repo_url
+        self.default_branch = default_branch
         self.messages: list[dict] = []
         self.last_chunks: list[dict] = []
         self._repo_map_sent = False
@@ -175,7 +184,7 @@ class ChatSession:
                 for c in new_chunks:
                     seen_ids.add(c["id"])
                 self.last_chunks.extend(new_chunks)
-                result_text = _format_chunks(new_chunks) if new_chunks else "No new results — all relevant chunks already retrieved."
+                result_text = _format_chunks(new_chunks, repo_url=self.repo_url, default_branch=self.default_branch) if new_chunks else "No new results — all relevant chunks already retrieved."
                 tool_results.append({
                     "type": "tool_result",
                     "tool_use_id": tb.id,
