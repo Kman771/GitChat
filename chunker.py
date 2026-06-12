@@ -1,6 +1,7 @@
 """chunker.py — clone a GitHub repo and chunk it into code and prose chunks.
 
-Code files: parsed with tree-sitter; each top-level function/class is one chunk (no size limit).
+Code files: parsed with tree-sitter; top-level functions are one chunk each; classes are
+split into one chunk per method (with the class name prepended as context).
 Prose files: split by headers then paragraphs with 15% overlap, capped at 500 tokens.
 """
 
@@ -53,6 +54,38 @@ _TOP_LEVEL: dict[str, set[str]] = {
     'php':        {'function_definition', 'class_declaration'},
     'swift':      {'function_declaration', 'class_declaration', 'struct_declaration'},
     'kotlin':     {'function_declaration', 'class_declaration', 'object_declaration'},
+}
+
+# Which top-level node types are classes (will be split into per-method chunks)
+_CLASS_TYPES: dict[str, set[str]] = {
+    'python':     {'class_definition'},
+    'javascript': {'class_declaration'},
+    'typescript': {'class_declaration'},
+    'tsx':        {'class_declaration'},
+    'java':       {'class_declaration', 'interface_declaration'},
+    'rust':       {'impl_item'},
+    'cpp':        {'class_specifier'},
+    'c_sharp':    {'class_declaration', 'interface_declaration'},
+    'ruby':       {'class', 'module'},
+    'php':        {'class_declaration'},
+    'swift':      {'class_declaration', 'struct_declaration'},
+    'kotlin':     {'class_declaration'},
+}
+
+# Method node types to extract from inside a class body
+_METHOD_TYPES: dict[str, set[str]] = {
+    'python':     {'function_definition', 'decorated_definition'},
+    'javascript': {'method_definition'},
+    'typescript': {'method_definition'},
+    'tsx':        {'method_definition'},
+    'java':       {'method_declaration', 'constructor_declaration'},
+    'rust':       {'function_item'},
+    'cpp':        {'function_definition'},
+    'c_sharp':    {'method_declaration', 'constructor_declaration'},
+    'ruby':       {'method'},
+    'php':        {'method_declaration'},
+    'swift':      {'function_declaration'},
+    'kotlin':     {'function_declaration'},
 }
 
 DOCS_EXTENSIONS = {'.md', '.mdx', '.rst', '.txt'}
@@ -145,6 +178,28 @@ def _get_node_name(node, source_bytes: bytes) -> str:
 
 # ── Code chunking (tree-sitter) ────────────────────────────────────────────────
 
+def _unwrap_decorated(node):
+    """Return the inner definition of a decorated_definition node, or the node itself."""
+    if node.type == 'decorated_definition':
+        inner = node.child_by_field_name('definition')
+        return inner if inner else node
+    return node
+
+
+def _extract_methods(class_node, source_bytes: bytes, method_types: set[str]) -> list:
+    """Return all method nodes found directly inside a class body (one level deep)."""
+    methods = []
+    for child in class_node.children:
+        if child.type in method_types:
+            methods.append(child)
+        else:
+            # Body containers: block, class_body, declaration_list, field_declaration_list
+            for grandchild in child.children:
+                if grandchild.type in method_types:
+                    methods.append(grandchild)
+    return methods
+
+
 def _chunk_code_with_tree_sitter(
     source_bytes: bytes,
     lang_name: str,
@@ -158,6 +213,8 @@ def _chunk_code_with_tree_sitter(
     tree = parser.parse(source_bytes)
     root = tree.root_node
     target_types = _TOP_LEVEL.get(lang_name, set())
+    class_types = _CLASS_TYPES.get(lang_name, set())
+    method_types = _METHOD_TYPES.get(lang_name, set())
 
     nodes = [child for child in root.children if child.type in target_types]
 
@@ -172,11 +229,35 @@ def _chunk_code_with_tree_sitter(
 
     chunks = []
     for node in nodes:
-        text = source_bytes[node.start_byte:node.end_byte].decode('utf-8', errors='replace')
-        name = _get_node_name(node, source_bytes)
-        chunk = _make_chunk(repo_name, file_path, "code", name, text)
-        if chunk:
-            chunks.append(chunk)
+        inner = _unwrap_decorated(node)  # unwrap @decorator for Python
+
+        if inner.type in class_types:
+            class_name = _get_node_name(inner, source_bytes)
+            methods = _extract_methods(inner, source_bytes, method_types)
+
+            if methods:
+                for method_node in methods:
+                    method_name = _get_node_name(method_node, source_bytes)
+                    method_text = source_bytes[method_node.start_byte:method_node.end_byte].decode('utf-8', errors='replace')
+                    # Prepend class context so the chunk is self-contained
+                    content = f"# class {class_name}\n{method_text}"
+                    chunk = _make_chunk(repo_name, file_path, "code", f"{class_name}.{method_name}", content)
+                    if chunk:
+                        chunks.append(chunk)
+            else:
+                # Class has no methods (e.g. only class variables) — keep whole class
+                text = source_bytes[node.start_byte:node.end_byte].decode('utf-8', errors='replace')
+                chunk = _make_chunk(repo_name, file_path, "code", class_name, text)
+                if chunk:
+                    chunks.append(chunk)
+        else:
+            # Top-level function — chunk as-is
+            text = source_bytes[node.start_byte:node.end_byte].decode('utf-8', errors='replace')
+            name = _get_node_name(node, source_bytes)
+            chunk = _make_chunk(repo_name, file_path, "code", name, text)
+            if chunk:
+                chunks.append(chunk)
+
     return chunks
 
 

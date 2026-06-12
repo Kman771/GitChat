@@ -8,6 +8,7 @@ import urllib.request
 
 import numpy as np
 import psycopg2
+import tiktoken
 from pgvector.psycopg2 import register_vector
 
 from chunker import chunk_repo
@@ -15,6 +16,16 @@ from config import DATABASE_URL, OLLAMA_URL
 
 OLLAMA_MODEL = "nomic-embed-text"
 BATCH_SIZE = 64
+MAX_EMBED_TOKENS = 512
+
+_enc = tiktoken.get_encoding("cl100k_base")
+
+
+def _safe_truncate(text: str) -> str:
+    tokens = _enc.encode(text)
+    if len(tokens) <= MAX_EMBED_TOKENS:
+        return text
+    return _enc.decode(tokens[:MAX_EMBED_TOKENS])
 
 
 def get_embeddings(texts: list[str], batch_size: int = BATCH_SIZE) -> list[list[float]]:
@@ -22,7 +33,7 @@ def get_embeddings(texts: list[str], batch_size: int = BATCH_SIZE) -> list[list[
     all_embeddings: list[list[float]] = []
 
     for i in range(0, len(texts), batch_size):
-        batch = texts[i : i + batch_size]
+        batch = [_safe_truncate(t) for t in texts[i : i + batch_size]]
         payload = json.dumps({"model": OLLAMA_MODEL, "input": batch}).encode()
         req = urllib.request.Request(
             OLLAMA_URL,

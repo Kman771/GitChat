@@ -11,6 +11,8 @@ from embedder import get_embeddings
 from config import DATABASE_URL
 
 TOP_K = 10
+MIN_SIMILARITY = 0.3
+RESULT_CAP = 5
 
 
 def embed_query(query: str) -> list[float]:
@@ -65,6 +67,27 @@ def retrieve(
 
     columns = ["id", "repo_name", "file_path", "chunk_type", "content", "metadata", "similarity"]
     return [dict(zip(columns, row)) for row in rows]
+
+
+def retrieve_for_queries(
+    queries: list[str],
+    conn,
+    repo_name: str | None = None,
+    top_k_per_query: int = TOP_K,
+    min_similarity: float = MIN_SIMILARITY,
+    result_cap: int = RESULT_CAP,
+) -> list[dict]:
+    """Embed each query term, retrieve chunks, deduplicate by id, filter by similarity threshold."""
+    seen_ids: set[int] = set()
+    results: list[dict] = []
+    for q in queries:
+        chunks = retrieve(q, conn, repo_name=repo_name, top_k=top_k_per_query)
+        for chunk in chunks:
+            if chunk["id"] not in seen_ids and chunk["similarity"] >= min_similarity:
+                seen_ids.add(chunk["id"])
+                results.append(chunk)
+    results.sort(key=lambda c: c["similarity"], reverse=True)
+    return results[:result_cap]
 
 
 def main(query: str, repo_name: str | None = None) -> None:

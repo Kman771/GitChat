@@ -6,21 +6,82 @@ import anthropic
 import psycopg2
 from pgvector.psycopg2 import register_vector
 
-from retrieval import retrieve
+from retrieval import retrieve_for_queries, RESULT_CAP
 from config import DATABASE_URL, ANTHROPIC_API_KEY
 
 SYSTEM_PROMPT = (
     "You are a senior engineer helping an intern understand a specific codebase. "
     "Rules:\n"
-    "1. Only answer questions about the codebase. For anything else, respond exactly: "
+    "1. ALWAYS call search_codebase before answering any question. Never ask for clarification "
+    "without searching first — use the codebase index to pick the most relevant identifiers "
+    "and search for them. Even vague questions like 'how does it work' should trigger a search "
+    "using entry-point names (e.g. main, run, start, or whatever the index shows).\n"
+    "2. Only if the question is clearly unrelated to code (e.g. 'what is the weather') respond: "
     "\"I can only answer questions about this codebase.\"\n"
-    "2. Match response length to question complexity — simple questions get 1-3 sentences, "
+    "3. Match response length to question complexity — simple questions get 1-3 sentences, "
     "complex questions get a thorough answer.\n"
-    "3. Always reference the relevant code from the provided source chunks.\n"
-    "4. Use markdown: backticks for identifiers, fenced blocks for code snippets, "
+    "4. Always reference the relevant code from the retrieved chunks.\n"
+    "5. Use markdown: backticks for identifiers, fenced blocks for code snippets, "
     "bullets for lists."
 )
-MODEL = "claude-sonnet-4-6"
+MODEL = "claude-haiku-4-5-20251001"
+MAX_TOOL_ROUNDS = 3
+
+SEARCH_TOOL = {
+    "name": "search_codebase",
+    "description": (
+        "Search the indexed codebase for relevant source code chunks. "
+        "Use precise technical vocabulary: function names, class names, module names, "
+        "or specific concepts as they would appear in the source files. "
+        "Prefer multiple focused terms over one broad question. "
+        "The repository index shown at the start of the conversation lists all available file paths and identifiers — use those exact names as search terms. "
+        "Call this once before answering — do not call it again unless the first results were completely empty."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "queries": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "1-5 distinct search terms using code-level vocabulary: "
+                    "identifiers, method names, class names, or technical concepts "
+                    "likely to appear verbatim in the source files."
+                ),
+                "minItems": 1,
+                "maxItems": 5,
+            }
+        },
+        "required": ["queries"],
+    },
+}
+
+
+def _build_repo_map(conn, repo_name: str | None) -> str:
+    if not repo_name:
+        return ""
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT file_path, chunk_type, metadata->>'name' "
+        "FROM chunks WHERE repo_name = %s ORDER BY file_path",
+        (repo_name,),
+    )
+    rows = cur.fetchall()
+    cur.close()
+    if not rows:
+        return ""
+    by_file: dict[str, list[str]] = {}
+    types: dict[str, str] = {}
+    for file_path, chunk_type, name in rows:
+        by_file.setdefault(file_path, [])
+        if name:
+            by_file[file_path].append(name)
+        types[file_path] = chunk_type
+    lines = ["Codebase index — use these identifiers when calling search_codebase:\n"]
+    for fp in sorted(by_file):
+        names = ", ".join(by_file[fp]) if by_file[fp] else "(no named chunks)"
+        lines.append(f"[{types[fp]}] {fp} → {names}")
+    return "\n".join(lines)
 
 
 def _format_chunks(chunks: list[dict]) -> str:
@@ -38,48 +99,9 @@ def _format_chunks(chunks: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def _chunks_to_documents(chunks: list[dict]) -> list[dict]:
-    """Convert retrieved chunks to document content blocks with citations enabled."""
-    docs = []
-    for c in chunks:
-        name = c["metadata"].get("name", "") if isinstance(c["metadata"], dict) else ""
-        title = f"{c['repo_name']}/{c['file_path']}"
-        if name:
-            title += f" · {name}"
-        docs.append({
-            "type": "document",
-            "source": {"type": "text", "media_type": "text/plain", "data": c["content"]},
-            "title": title,
-            "citations": {"enabled": True},
-        })
-    if docs:
-        docs[-1]["cache_control"] = {"type": "ephemeral"}
-    return docs
-
-
-def _parse_cited_response(response) -> str:
-    """Reconstruct reply text from content blocks, appending a Sources section."""
-    parts = []
-    refs: list[tuple[str, str]] = []  # (document_title, cited_text) in first-seen order
-
-    for block in response.content:
-        if block.type != "text":
-            continue
-        citations = getattr(block, "citations", None) or []
-        parts.append(block.text)
-        for cit in citations:
-            key = (cit.document_title, cit.cited_text)
-            if key not in refs:
-                refs.append(key)
-            parts.append(f"[{refs.index(key) + 1}]")
-
-    reply = "".join(parts)
-    if refs:
-        reply += "\n\n---\n**Sources**\n"
-        for i, (title, cited) in enumerate(refs, 1):
-            snippet = cited[:100] + ("…" if len(cited) > 100 else "")
-            reply += f'[{i}] `{title}` — *"{snippet}"*\n'
-    return reply
+def _parse_response(response) -> str:
+    """Extract text from all text content blocks in the response."""
+    return "".join(block.text for block in response.content if block.type == "text")
 
 
 class ChatSession:
@@ -90,47 +112,77 @@ class ChatSession:
         self.conn = conn
         self.repo_name = repo_name
         self.messages: list[dict] = []
+        self.last_chunks: list[dict] = []
+        self._repo_map_sent = False
 
     def send(self, user_query: str) -> str:
-        chunks = retrieve(user_query, self.conn, repo_name=self.repo_name)
-
-        if chunks:
-            # Pass chunks as document blocks so Claude can cite specific passages.
-            # cache_control is applied to the last document, caching the full set.
-            user_content: str | list = _chunks_to_documents(chunks) + [
-                {"type": "text", "text": user_query}
-            ]
+        if not self._repo_map_sent:
+            repo_map = _build_repo_map(self.conn, self.repo_name)
+            content = f"{repo_map}\n\n---\n{user_query}" if repo_map else user_query
+            self._repo_map_sent = True
         else:
-            user_content = user_query
+            content = user_query
+        turn_start = len(self.messages)
+        self.messages.append({"role": "user", "content": content})
+        self.last_chunks = []
+        seen_ids: set[int] = set()
+        tool_rounds = 0
 
-        self.messages.append({"role": "user", "content": user_content})
+        while True:
+            response = self.client.messages.create(
+                model=MODEL,
+                max_tokens=8000,
+                system=[
+                    {
+                        "type": "text",
+                        "text": SYSTEM_PROMPT,
+                        "cache_control": {"type": "ephemeral"},
+                    }
+                ],
+                tools=[SEARCH_TOOL],
+                messages=self.messages,
+            )
 
-        response = self.client.messages.create(
-            model=MODEL,
-            max_tokens=8000,
-            system=[
-                {
-                    "type": "text",
-                    "text": SYSTEM_PROMPT,
-                    "cache_control": {"type": "ephemeral"},
-                }
-            ],
-            messages=self.messages,
-        )
+            u = response.usage
+            print(
+                f"\n[usage] input={u.input_tokens} | "
+                f"cache_write={u.cache_creation_input_tokens} | "
+                f"cache_read={u.cache_read_input_tokens} | "
+                f"output={u.output_tokens}",
+                file=sys.stderr,
+            )
 
-        reply = _parse_cited_response(response)
-        self.messages.append({"role": "assistant", "content": reply})
+            tool_use_blocks = [b for b in response.content if b.type == "tool_use"]
 
-        u = response.usage
-        print(
-            f"\n[usage] input={u.input_tokens} | "
-            f"cache_write={u.cache_creation_input_tokens} | "
-            f"cache_read={u.cache_read_input_tokens} | "
-            f"output={u.output_tokens}",
-            file=sys.stderr,
-        )
+            if not tool_use_blocks or tool_rounds >= MAX_TOOL_ROUNDS or len(self.last_chunks) >= RESULT_CAP:
+                answer = _parse_response(response)
+                # Compact: replace all intermediates with just question + plain text answer
+                self.messages = self.messages[:turn_start] + [
+                    self.messages[turn_start],
+                    {"role": "assistant", "content": answer},
+                ]
+                return answer
 
-        return reply
+            tool_rounds += 1
+            self.messages.append({"role": "assistant", "content": response.content})
+            print(f"\n[tool] round={tool_rounds} — Claude searching: {[b.input.get('queries') for b in tool_use_blocks]}", file=sys.stderr)
+
+            tool_results = []
+            for tb in tool_use_blocks:
+                queries = tb.input.get("queries", [])
+                chunks = retrieve_for_queries(queries, self.conn, repo_name=self.repo_name)
+                new_chunks = [c for c in chunks if c["id"] not in seen_ids]
+                for c in new_chunks:
+                    seen_ids.add(c["id"])
+                self.last_chunks.extend(new_chunks)
+                result_text = _format_chunks(new_chunks) if new_chunks else "No new results — all relevant chunks already retrieved."
+                tool_results.append({
+                    "type": "tool_result",
+                    "tool_use_id": tb.id,
+                    "content": result_text,
+                })
+
+            self.messages.append({"role": "user", "content": tool_results})
 
 
 def main(repo_name: str | None = None) -> None:

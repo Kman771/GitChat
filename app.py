@@ -11,7 +11,6 @@ from pgvector.psycopg2 import register_vector
 from chunker import chunk_repo, normalize_github_url
 from embedder import embed_and_store
 from query import ChatSession, _format_chunks
-from retrieval import retrieve
 from config import DATABASE_URL, ANTHROPIC_API_KEY
 
 app = Flask(__name__)
@@ -93,13 +92,10 @@ def chat():
     if not message:
         return jsonify({"error": "Empty message"}), 400
 
-    # Retrieve chunks separately so we can return them for the "Show context" panel.
-    # ChatSession.send also retrieves internally — the extra embed + DB call is
-    # ~100ms and keeps query.py unchanged.
-    chunks = retrieve(message, _state["conn"], repo_name=_state["repo_name"])
-    context_text = _format_chunks(chunks)
-
     reply = _state["session"].send(message)
+
+    chunks = _state["session"].last_chunks
+    context_text = _format_chunks(chunks)
 
     return jsonify({
         "reply": reply,
